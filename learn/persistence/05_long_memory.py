@@ -16,6 +16,7 @@ def chatbot(state: State, config):
     # 获取当前用户的ID
     user_id = config["configurable"].get("user_id")
 
+    # 命名空间，用来区分用户的记忆区
     namespace = (user_id, "memories")
 
     last_msg = state['messages'][-1]
@@ -25,11 +26,12 @@ def chatbot(state: State, config):
         print(f"喜好：{preference}")
 
         # 写入store (使用全局变量 in_memory_store)
-        in_memory_store.put(namespace, uuid.uuid4().hex, {"data": preference})
+        in_memory_store.put(namespace, uuid.uuid4().hex, {"data": preference}) # 后面两个参数的含义依次是：记录id，记录内容
 
         return {"messages": [f"已记录长期记忆：用户喜欢{preference}"]}
 
     if "吃什么" in last_msg:
+        # postgresql支持，向量搜索
         memories = in_memory_store.search(namespace)
 
         if memories:
@@ -50,10 +52,6 @@ workflow.add_edge("bot", END)
 # 加载环境变量
 load_dotenv()
 DB_URI = os.getenv("POSTGRES_URI")
-
-# ==========================================
-# 核心修正：使用 with 语句嵌套管理连接
-# ==========================================
 
 print("正在连接数据库...")
 
