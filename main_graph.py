@@ -1,9 +1,10 @@
 import os
 import operator
+import json
 from typing import Annotated, List, Tuple, TypedDict, Union
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_tavily import TavilySearch
 from langchain_core.prompts import ChatPromptTemplate
 from utils.logger_util import logger
 from langgraph.graph import END, StateGraph, START
@@ -17,6 +18,7 @@ llm = ChatOpenAI(
     temperature=0.7,
     streaming=True  # 开启流式
 )
+tavily_tool = TavilySearch(max_results=5)
 
 class PlanExecuteState(TypedDict):
     """定义状态"""
@@ -38,21 +40,29 @@ def planner_node(state: PlanExecuteState):
     """接收用户问题，生成初始计划"""
     logger.info("🚀规划师正在规划任务")
     question = state["question"]
-    system_prompt = "你是一个旅游规划专家，请根据用户的需求，制定一个清晰的分布执行计划。"
+    system_prompt = "你是一个旅游规划专家。仅输出 JSON。字段：steps(string[])。不要任何额外文本或解释。"
     user_prompt = f"用户需求：{question}"
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
 
-    # 调用模型，获取结构化输出
-    structured_llm  = llm.with_structured_output(Plan)
-    response = structured_llm.invoke(messages)
-    return {"plan": response.steps}
+    raw = llm.invoke(messages)
+    try:
+        data = json.loads(raw.content)
+        parsed = Plan.model_validate(data)
+        steps = parsed.steps
+    except Exception as e:
+        logger.error(f"规划解析失败：{e}")
+        steps = []
+    return {"plan": steps}
 
 def executor_node(state: PlanExecuteState):
     """执行者：取出计划中的第一个任务"""
     plan = state['plan']
+    if not plan:
+        logger.error("计划为空")
+        return {"past_steps": [], "response": ""}
     task = plan[0]
 
     logger.info(f"🚀执行者正在执行任务：{task}")
@@ -89,10 +99,10 @@ def replanner_node(state: PlanExecuteState):
     current_plan_str = "\n".join(state['plan'])
 
     system_prompt = (
-        "你是一个任务调度系统。\n"
-        "1. 检查'已完成步骤'的信息是否足以回答用户的'原始目标'。\n"
-        "2. 如果足够，请在response字段中输出最终的回答（Markdown 格式），并将new_plan设为空列表。\n"
-        "3. 如果不足够，请根据执行结果更新剩余的计划（去掉已完成的，或者添加新的步骤），填入new_plan字段。"
+        "你是一个任务调度系统。仅输出 JSON。字段：response(string)、next_plan(string[])。\n"
+        "当信息足够时，将 next_plan 设为空数组，并在 response 中给出最终 Markdown 回答；\n"
+        "当信息不足时，response 设为空字符串，更新 next_plan（字符串数组）。\n"
+        "不要任何额外文本或解释。"
     )
 
     user_prompt = (
@@ -105,8 +115,13 @@ def replanner_node(state: PlanExecuteState):
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
-    structured_llm = llm.with_structured_output(Response)
-    result = structured_llm.invoke(messages)
+    raw = llm.invoke(messages)
+    try:
+        data = json.loads(raw.content)
+        result = Response.model_validate(data)
+    except Exception as e:
+        logger.error(f"重新规划解析失败：{e}")
+        result = Response(response="", next_plan=[])
 
     if result.response and result.response.strip() != "":
         logger.info("任务完成，生成最终回答。")
@@ -117,7 +132,7 @@ def replanner_node(state: PlanExecuteState):
 
 def should_end(state: PlanExecuteState):
     """判断流程是否需要结束"""
-    if state['response']:
+    if state.get('response'):
         return True
     else:
         return False
