@@ -1,14 +1,16 @@
-import os
-import operator
 import json
-from typing import Annotated, List, Tuple, TypedDict, Union
+import operator
+import os
+from typing import Annotated, List, Tuple, TypedDict
+
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
-from langchain_core.prompts import ChatPromptTemplate
-from utils.logger_util import logger
 from langgraph.graph import END, StateGraph, START
 from pydantic import BaseModel, Field
+
+from utils.logger_util import logger
+from utils.parse_llm_json_util import parse_llm_json
 
 load_dotenv()
 llm = ChatOpenAI(
@@ -20,21 +22,25 @@ llm = ChatOpenAI(
 )
 tavily_tool = TavilySearch(max_results=5)
 
+
 class PlanExecuteState(TypedDict):
     """定义状态"""
-    question: str # 用户问题
-    plan: List[str] # 待执行的任务列表
-    past_steps: Annotated[List[Tuple], operator.add] # 已完成的步骤（步骤名，结果）
-    response: str # 最终回复
+    question: str  # 用户问题
+    plan: List[str]  # 待执行的任务列表
+    past_steps: Annotated[List[Tuple], operator.add]  # 已完成的步骤（步骤名，结果）
+    response: str  # 最终回复
+
 
 class Plan(BaseModel):
     """(结构化输出) 规划列表"""
-    steps: List[str] = Field(description="一系列具体的步骤，例如查询天气，查询景点等") # 计划列表结构
+    steps: List[str] = Field(description="一系列具体的步骤，例如查询天气，查询景点等")  # 计划列表结构
+
 
 class Response(BaseModel):
     """（结构化输出）重新规划或结束"""
     response: str = Field(description="最终回答，如果还需要继续执行步骤，则为空字符串")
     next_plan: List[str] = Field(description="剩余未完成的步骤列表")
+
 
 def planner_node(state: PlanExecuteState):
     """接收用户问题，生成初始计划"""
@@ -49,13 +55,15 @@ def planner_node(state: PlanExecuteState):
 
     raw = llm.invoke(messages)
     try:
-        data = json.loads(raw.content)
+        data = parse_llm_json(raw.content)
         parsed = Plan.model_validate(data)
         steps = parsed.steps
+        logger.info(f"规划结果：{steps}")
     except Exception as e:
         logger.error(f"规划解析失败：{e}")
         steps = []
     return {"plan": steps}
+
 
 def executor_node(state: PlanExecuteState):
     """执行者：取出计划中的第一个任务"""
@@ -69,7 +77,8 @@ def executor_node(state: PlanExecuteState):
 
     # 1) 生成搜索关键词
     search_query_prompt = [
-        {"role": "system", "content": "你是一个搜索助手，请把用户的任务转换为最适合搜索引擎搜索的关键词。只输出关键词，不要其他废话。"},
+        {"role": "system",
+         "content": "你是一个搜索助手，请把用户的任务转换为最适合搜索引擎搜索的关键词。只输出关键词，不要其他废话。"},
         {"role": "user", "content": f"任务：{task}"}
     ]
     keywords_text = llm.invoke(search_query_prompt)
@@ -89,6 +98,7 @@ def executor_node(state: PlanExecuteState):
     return {
         "past_steps": [(task, result_str)]
     }
+
 
 def replanner_node(state: PlanExecuteState):
     """重新规划器：根据执行结果，判断是否需要重新规划"""
@@ -117,7 +127,7 @@ def replanner_node(state: PlanExecuteState):
     ]
     raw = llm.invoke(messages)
     try:
-        data = json.loads(raw.content)
+        data = parse_llm_json(raw.content)
         result = Response.model_validate(data)
     except Exception as e:
         logger.error(f"重新规划解析失败：{e}")
@@ -130,6 +140,7 @@ def replanner_node(state: PlanExecuteState):
         logger.info(f"重新规划师决策：继续执行，剩余计划：{len(result.next_plan)}个步骤")
         return {"plan": result.next_plan}
 
+
 def should_end(state: PlanExecuteState):
     """判断流程是否需要结束"""
     if state.get('response'):
@@ -137,30 +148,31 @@ def should_end(state: PlanExecuteState):
     else:
         return False
 
+
 workflow = StateGraph(PlanExecuteState)
 
 workflow.add_node("planner", planner_node)
 workflow.add_node("executor", executor_node)
 workflow.add_node("replanner", replanner_node)
 
-workflow.add_edge(START, "planner")         # 开始 -> 规划
-workflow.add_edge("planner", "executor")    # 规划 -> 执行者
+workflow.add_edge(START, "planner")  # 开始 -> 规划
+workflow.add_edge("planner", "executor")  # 规划 -> 执行者
 workflow.add_edge("executor", "replanner")  # 执行者 -> 反思
 
 # 添加条件分支
 workflow.add_conditional_edges(
-    "replanner", # 从反思节点出来
-    should_end, # 判断是否结束
+    "replanner",  # 从反思节点出来
+    should_end,  # 判断是否结束
     {
-        True: END, # 如果返回 True，流程结束
-        False: "executor" # 如果返回 False，继续执行
+        True: END,  # 如果返回 True，流程结束
+        False: "executor"  # 如果返回 False，继续执行
     }
 )
 
 app = workflow.compile()
 
 if __name__ == "__main__":
-    question = "我想去洛阳玩玩，帮我查查龙门石窟明天的天气，以及门票价格。"
+    question = "我想去洛阳玩两天，想去白马寺，小街天府，龙门石窟，给我两天的游玩计划。"
     state = {"question": question}
 
     for event in app.stream(state):
@@ -171,4 +183,5 @@ if __name__ == "__main__":
 
     # 获取最终回答
     final_response = node_state['response']
+    logger.info(f"问题：{question}")
     logger.info(f"最终回答：{final_response}")
