@@ -1,7 +1,6 @@
 langgraph~=1.0.6
+psycopg-pool~=3.3.0
 python-dotenv~=1.2.1
-loguru~=0.7.3
 langchain-openai~=1.1.7
-langchain-community~=0.3.30
-langchain-core~=1.2.7
 pydantic~=2.12.4
+loguru~=0.7.3
