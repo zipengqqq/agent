@@ -90,8 +90,8 @@ def executor_node(state: PlanExecuteState):
     logger.info(f"搜索结果长度为：{len(result_str)}")
 
     # 3）提取摘要
-    summary = abstract(result_str)
-    logger.info(f"摘要长度为: {len(summary)}")
+    result_str = abstract(result_str)
+    logger.info(f"摘要长度为: {len(result_str)}")
 
     return {
         "past_steps": [(task, result_str)],
