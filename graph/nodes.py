@@ -2,6 +2,7 @@ import json
 
 from graph.config import PlanExecuteState, tavily_tool, Response, Plan
 from graph.config import llm
+from graph.function import abstract
 from graph.prompts import route_prompt, direct_answer_prompt, planner_prompt, search_query_prompt, reflect_prompt
 from utils.logger_util import logger
 from utils.parse_llm_json_util import parse_llm_json
@@ -86,8 +87,11 @@ def executor_node(state: PlanExecuteState):
     except Exception as e:
         logger.error(f"搜索失败：{e}")
         return {"response": f"搜索失败：{e}"}
-
     logger.info(f"搜索结果长度为：{len(result_str)}")
+
+    # 3）提取摘要
+    summary = abstract(result_str)
+    logger.info(f"摘要长度为: {len(summary)}")
 
     return {
         "past_steps": [(task, result_str)],
